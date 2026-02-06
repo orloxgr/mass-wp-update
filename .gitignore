@@ -1,0 +1,26 @@
+# Logs
+logs/
+*.log
+*.jsonl
+
+# Runtime / generated files
+wpinstalls.txt
+
+# Optional local configuration overrides
+custom-roots.txt
+
+# Premium plugin packages (not part of the repo)
+premium-zips/
+*.zip
+
+# OS / editor junk
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+*.bak
+*.tmp
+
+# Shell history / env
+.env
+.env.*
