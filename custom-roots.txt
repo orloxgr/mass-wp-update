@@ -1,0 +1,14 @@
+# custom-roots.txt
+#
+# Optional additional directories to scan for WordPress installations.
+# One directory per line.
+#
+# Use this file to add non-standard paths without editing the script
+# or the main configuration file.
+
+# Examples:
+# /srv/www
+# /opt/websites
+# /data/sites
+# /mnt/storage/web
+# /var/www/custom
