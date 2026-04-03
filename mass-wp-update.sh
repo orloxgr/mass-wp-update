@@ -45,7 +45,8 @@ BACKUP_DB_DEFAULT=0           # 1 = dump DB before updating
 BACKUP_PLUGINS_DEFAULT=0      # 1 = ZIP each updatable plugin before updating
 BACKUP_RETENTION_DAYS_DEFAULT=30  # 0 = keep forever
 FLUSH_PERMALINKS_DEFAULT=0      # 1 = soft flush rewrite rules after updates
-CLEAR_CACHE_DEFAULT=0           # 1 = clear supported caches and builder caches after updates
+CLEAR_CACHE_DEFAULT=0           # 1 = clear supported caches after updates
+CLEAR_BUILDERS_DEFAULT=0        # 1 = run supported builder regeneration/clear commands after updates
 
 # Binaries
 WP_BIN_DEFAULT="/usr/local/bin/wp"
@@ -93,6 +94,7 @@ BACKUP_PLUGINS="${BACKUP_PLUGINS:-$BACKUP_PLUGINS_DEFAULT}"
 BACKUP_RETENTION_DAYS="${BACKUP_RETENTION_DAYS:-$BACKUP_RETENTION_DAYS_DEFAULT}"
 FLUSH_PERMALINKS="${FLUSH_PERMALINKS:-$FLUSH_PERMALINKS_DEFAULT}"
 CLEAR_CACHE="${CLEAR_CACHE:-$CLEAR_CACHE_DEFAULT}"
+CLEAR_BUILDERS="${CLEAR_BUILDERS:-$CLEAR_BUILDERS_DEFAULT}"
 WP_BIN="${WP_BIN:-$WP_BIN_DEFAULT}"
 PHP_BIN="${PHP_BIN:-$PHP_BIN_DEFAULT}"
 USE_OWNER_USER="${USE_OWNER_USER:-$USE_OWNER_USER_DEFAULT}"
@@ -188,6 +190,9 @@ show_help() {
 
   --clear-cache       Clear supported WordPress caches after updates.
 
+  --clear-builders    Run supported builder cache / asset regeneration commands
+                      after updates (more invasive; opt-in).
+
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
   CONFIGURATION FILE  (mass-wp-update.conf)
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -204,7 +209,8 @@ show_help() {
   BACKUP_PLUGINS      1 = ZIP updatable plugins before updating  (default: 0).
   BACKUP_RETENTION_DAYS  Days to keep old snapshots; 0 = forever (default: 30).
   FLUSH_PERMALINKS     1 = soft flush rewrite rules after updates (default: 0).
-  CLEAR_CACHE          1 = clear supported caches and builder caches after updates (default: 0).
+  CLEAR_CACHE          1 = clear supported caches after updates (default: 0).
+  CLEAR_BUILDERS       1 = run supported builder regeneration commands after updates (default: 0).
   WP_BIN              Path to WP-CLI binary.
   PHP_BIN             Path to PHP CLI (auto-detected if empty).
   USE_OWNER_USER      1 = run WP-CLI as the file owner  (default: 1).
@@ -285,6 +291,7 @@ OPT_BACKUP_DIR_OVERRIDE=""
 OPT_NO_COLOR=0
 OPT_FLUSH_PERMALINKS_OVERRIDE=0
 OPT_CLEAR_CACHE_OVERRIDE=0
+OPT_CLEAR_BUILDERS_OVERRIDE=0
 INTERACTIVE=0   # set to 1 when running the wizard (no args given)
 
 if [[ $# -eq 0 ]]; then
@@ -334,6 +341,9 @@ else
       --clear-cache)
         OPT_CLEAR_CACHE_OVERRIDE=1; shift
         ;;
+      --clear-builders)
+        OPT_CLEAR_BUILDERS_OVERRIDE=1; shift
+        ;;
       *)
         echo "ERROR: Unknown option: $1"
         echo "       Run without arguments to launch the interactive wizard."
@@ -350,6 +360,7 @@ else
   [[ "$OPT_NO_COLOR"                == "1" ]] && WP_CLI_COLOR=0
   [[ "$OPT_FLUSH_PERMALINKS_OVERRIDE" == "1" ]] && FLUSH_PERMALINKS=1
   [[ "$OPT_CLEAR_CACHE_OVERRIDE"      == "1" ]] && CLEAR_CACHE=1
+  [[ "$OPT_CLEAR_BUILDERS_OVERRIDE"   == "1" ]] && CLEAR_BUILDERS=1
   [[ "$OPT_REFRESH"                 == "1" && -f "$INSTALLS_FILE" ]] && rm -f "$INSTALLS_FILE"
 fi
 
@@ -466,12 +477,15 @@ interactive_wizard() {
   echo "  STEP 4 of 4 — Optional post-update maintenance"
   echo ""
 
-  local ans_flush ans_cache
+  local ans_flush ans_cache ans_builders
   read -r -p "  Soft flush permalinks after updates? [y/N]: " ans_flush
   [[ "$ans_flush" =~ ^[Yy]$ ]] && FLUSH_PERMALINKS=1 || FLUSH_PERMALINKS=0
 
   read -r -p "  Clear supported caches after updates? [y/N]: " ans_cache
   [[ "$ans_cache" =~ ^[Yy]$ ]] && CLEAR_CACHE=1 || CLEAR_CACHE=0
+
+  read -r -p "  Run supported builder regeneration commands after updates? [y/N]: " ans_builders
+  [[ "$ans_builders" =~ ^[Yy]$ ]] && CLEAR_BUILDERS=1 || CLEAR_BUILDERS=0
   echo ""
 
   # ------------------------------------------------------------------
@@ -487,12 +501,12 @@ interactive_wizard() {
   esac
 
   maintenance_label="None"
-  if [[ "$FLUSH_PERMALINKS" == "1" && "$CLEAR_CACHE" == "1" ]]; then
-    maintenance_label="Soft flush permalinks + clear cache"
-  elif [[ "$FLUSH_PERMALINKS" == "1" ]]; then
-    maintenance_label="Soft flush permalinks"
-  elif [[ "$CLEAR_CACHE" == "1" ]]; then
-    maintenance_label="Clear cache"
+  maintenance_parts=()
+  [[ "$FLUSH_PERMALINKS" == "1" ]] && maintenance_parts+=("Soft flush permalinks")
+  [[ "$CLEAR_CACHE" == "1" ]] && maintenance_parts+=("Clear cache")
+  [[ "$CLEAR_BUILDERS" == "1" ]] && maintenance_parts+=("Clear builders")
+  if [[ ${#maintenance_parts[@]} -gt 0 ]]; then
+    maintenance_label="$(IFS=' + '; echo "${maintenance_parts[*]}")"
   fi
 
   echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
@@ -617,6 +631,15 @@ wp_prefix() {
   echo ""
 }
 
+shell_join() {
+  local out="" q arg
+  for arg in "$@"; do
+    printf -v q '%q' "$arg"
+    out+=" $q"
+  done
+  printf '%s' "${out# }"
+}
+
 # ==================================================
 # DISCOVERY
 # ==================================================
@@ -641,8 +664,7 @@ discover_wp_installs() {
   done |
   while IFS= read -r cfg; do
     site="${cfg%/wp-config.php}"
-    [[ -f "$site/wp-load.php" && -d "$site/wp-content" ]] && printf '%s
-' "$site"
+    [[ -f "$site/wp-load.php" && -d "$site/wp-content" ]] && printf '%s\n' "$site"
   done | sort -u
 }
 
@@ -660,7 +682,7 @@ get_plugin_slug_from_zip() {
 }
 
 # ==================================================
-# WP RUNNER (timestamped lines + JSONL)
+# WP RUNNER (timestamped lines + JSONL + CORRECTED)
 # ==================================================
 
 wp_run() {
@@ -679,7 +701,10 @@ wp_run() {
     return 0
   fi
 
-  local cmd="$prefix \"$PHP_BIN\" \"$WP_BIN\" --path=\"$wp_path\" ${WP_CLI_OPTS[*]} $*"
+  # FIX: Correctly escape all arguments using shell_join
+  local joined_args
+  joined_args="$(shell_join "$@")"
+  local cmd="$prefix \"$PHP_BIN\" \"$WP_BIN\" --path=\"$wp_path\" ${WP_CLI_OPTS[*]} $joined_args"
 
   if [[ "$DRY_RUN" == "1" ]]; then
     echo "[$(ts)] ${pfx}${site} | ${phase} | [DRY] $cmd" | tee -a "$TEXT_LOG"
@@ -730,7 +755,10 @@ wp_run_loaded() {
     return 0
   fi
 
-  local cmd="$prefix \"$PHP_BIN\" \"$WP_BIN\" --path=\"$wp_path\" ${WP_CLI_OPTS_LOADED[*]} $*"
+  # FIX: Correctly escape all arguments using shell_join
+  local joined_args
+  joined_args="$(shell_join "$@")"
+  local cmd="$prefix \"$PHP_BIN\" \"$WP_BIN\" --path=\"$wp_path\" ${WP_CLI_OPTS_LOADED[*]} $joined_args"
 
   if [[ "$DRY_RUN" == "1" ]]; then
     echo "[$(ts)] ${pfx}${site} | ${phase} | [DRY] $cmd" | tee -a "$TEXT_LOG"
@@ -768,11 +796,11 @@ wp_run_loaded() {
 plugin_is_installed() {
   local wp_path="$1"
   local slug="$2"
-  local prefix
+  local prefix cmd
   prefix="$(wp_prefix "$wp_path")"
+  cmd="${prefix:+$prefix }$(shell_join "$PHP_BIN" "$WP_BIN" "--path=$wp_path" "${WP_CLI_OPTS[@]}" plugin is-installed "$slug")"
 
-  bash -lc "$prefix \"$PHP_BIN\" \"$WP_BIN\" --path=\"$wp_path\" ${WP_CLI_OPTS[*]} plugin is-installed \"$slug\"" \
-    </dev/null >/dev/null 2>&1
+  bash -lc "$cmd" </dev/null >/dev/null 2>&1
 }
 
 plugin_dir_exists() {
@@ -790,11 +818,11 @@ theme_dir_exists() {
 wp_command_exists_loaded() {
   local wp_path="$1"
   local command_name="$2"
-  local prefix
+  local prefix cmd
   prefix="$(wp_prefix "$wp_path")"
+  cmd="${prefix:+$prefix }$(shell_join "$PHP_BIN" "$WP_BIN" "--path=$wp_path" "${WP_CLI_OPTS_LOADED[@]}" help "$command_name")"
 
-  bash -lc "$prefix \"$PHP_BIN\" \"$WP_BIN\" --path=\"$wp_path\" ${WP_CLI_OPTS_LOADED[*]} help \"$command_name\"" \
-    </dev/null >/dev/null 2>&1
+  bash -lc "$cmd" </dev/null >/dev/null 2>&1
 }
 
 flush_permalinks_soft() {
@@ -805,19 +833,13 @@ flush_permalinks_soft() {
   wp_run_loaded "$wp_path" "$pfx" "$site" "rewrite" rewrite flush
 }
 
-clear_site_cache() {
+clear_site_builders() {
   local wp_path="$1" pfx="$2" site="$3"
 
-  [[ "$CLEAR_CACHE" == "1" ]] || return 0
+  [[ "$CLEAR_BUILDERS" == "1" ]] || return 0
 
   local did_anything=0
   local saw_unsupported=0
-
-  # --------------------------------------------------
-  # Builder-specific caches / generated assets
-  # Run these BEFORE page-cache purges so front-end caches
-  # can repopulate using fresh builder-generated CSS/assets.
-  # --------------------------------------------------
 
   if plugin_is_installed "$wp_path" "elementor" && wp_command_exists_loaded "$wp_path" "elementor"; then
     did_anything=1
@@ -869,9 +891,52 @@ clear_site_cache() {
     log_json "info" "$site" "builder" "Bricks detected; no documented WP-CLI cache/regeneration command was added. Skipping"
   fi
 
-  # --------------------------------------------------
-  # Cache plugins / object cache
-  # --------------------------------------------------
+  if [[ "$did_anything" == "0" && "$saw_unsupported" == "0" ]]; then
+    echo "[$(ts)] ${pfx}${site} | builder | No supported builder command detected; skipping." | tee -a "$TEXT_LOG"
+    log_json "info" "$site" "builder" "No supported builder command detected; skipping"
+  fi
+}
+
+# FIX: Flattened PHP code for eval to avoid bash syntax errors with multi-line blocks
+clear_wp_rocket_cache() {
+  local wp_path="$1" pfx="$2" site="$3"
+
+  if ! plugin_is_installed "$wp_path" "wp-rocket"; then
+    return 1
+  fi
+
+  if wp_command_exists_loaded "$wp_path" "rocket"; then
+    wp_run_loaded "$wp_path" "$pfx" "$site" "cache" rocket clean --confirm
+    return 0
+  fi
+
+  wp_run_loaded "$wp_path" "$pfx" "$site" "cache" eval 'if(function_exists("rocket_clean_domain")){rocket_clean_domain();if(function_exists("rocket_clean_minify")){rocket_clean_minify();}WP_CLI::success("WP Rocket cache cleared via PHP fallback.");}else{WP_CLI::warning("WP Rocket detected but no wp rocket command or PHP fallback is available.");}'
+  return 0
+}
+
+# FIX: Flattened PHP code for eval to avoid bash syntax errors with multi-line blocks
+clear_wp_fastest_cache() {
+  local wp_path="$1" pfx="$2" site="$3"
+
+  if ! plugin_is_installed "$wp_path" "wp-fastest-cache"; then
+    return 1
+  fi
+
+  if wp_command_exists_loaded "$wp_path" "fastest-cache"; then
+    wp_run_loaded "$wp_path" "$pfx" "$site" "cache" fastest-cache clear all
+    return 0
+  fi
+
+  wp_run_loaded "$wp_path" "$pfx" "$site" "cache" eval 'if(function_exists("wpfc_clear_all_cache")){wpfc_clear_all_cache();WP_CLI::success("WP Fastest Cache cleared via PHP fallback.");}else{WP_CLI::warning("WP Fastest Cache detected but no CLI command or PHP fallback function is available.");}'
+  return 0
+}
+
+clear_site_cache() {
+  local wp_path="$1" pfx="$2" site="$3"
+
+  [[ "$CLEAR_CACHE" == "1" ]] || return 0
+
+  local did_anything=0
 
   if plugin_is_installed "$wp_path" "litespeed-cache"; then
     did_anything=1
@@ -880,7 +945,7 @@ clear_site_cache() {
 
   if plugin_is_installed "$wp_path" "wp-rocket"; then
     did_anything=1
-    wp_run_loaded "$wp_path" "$pfx" "$site" "cache" rocket clean --confirm
+    clear_wp_rocket_cache "$wp_path" "$pfx" "$site"
   fi
 
   if plugin_is_installed "$wp_path" "w3-total-cache"; then
@@ -890,7 +955,7 @@ clear_site_cache() {
 
   if plugin_is_installed "$wp_path" "wp-fastest-cache"; then
     did_anything=1
-    wp_run_loaded "$wp_path" "$pfx" "$site" "cache" fastest-cache clear all
+    clear_wp_fastest_cache "$wp_path" "$pfx" "$site"
   fi
 
   if plugin_is_installed "$wp_path" "wp-super-cache" && wp_command_exists_loaded "$wp_path" "super-cache"; then
@@ -907,14 +972,24 @@ clear_site_cache() {
     log_json "info" "$site" "cache" "WP-Optimize detected; relying on its automatic cache purge behavior after plugin/theme/permalink updates"
   fi
 
+  if wp_command_exists_loaded "$wp_path" "redis" || plugin_is_installed "$wp_path" "redis-cache" || plugin_is_installed "$wp_path" "wp-redis"; then
+    did_anything=1
+    if wp_command_exists_loaded "$wp_path" "redis"; then
+      wp_run_loaded "$wp_path" "$pfx" "$site" "cache" redis flush
+    else
+      echo "[$(ts)] ${pfx}${site} | cache | Redis object cache detected, but no wp redis command is available; falling back to generic object cache flush if possible." | tee -a "$TEXT_LOG"
+      log_json "info" "$site" "cache" "Redis object cache detected, but no wp redis command is available; falling back to generic object cache flush if possible"
+    fi
+  fi
+
   if [[ -f "$wp_path/wp-content/object-cache.php" ]]; then
     did_anything=1
     wp_run_loaded "$wp_path" "$pfx" "$site" "cache" cache flush
   fi
 
-  if [[ "$did_anything" == "0" && "$saw_unsupported" == "0" ]]; then
-    echo "[$(ts)] ${pfx}${site} | cache | No supported cache plugin, builder cache command, or object cache detected; skipping." | tee -a "$TEXT_LOG"
-    log_json "info" "$site" "cache" "No supported cache plugin, builder cache command, or object cache detected; skipping"
+  if [[ "$did_anything" == "0" ]]; then
+    echo "[$(ts)] ${pfx}${site} | cache | No supported cache plugin or object cache detected; skipping." | tee -a "$TEXT_LOG"
+    log_json "info" "$site" "cache" "No supported cache plugin or object cache detected; skipping"
   fi
 }
 
@@ -1260,7 +1335,7 @@ purge_old_backups() {
 }
 
 # ==================================================
-# PREMIUM ZIP UPDATES (only if installed)
+# PREMIUM ZIP UPDATES (only if installed) - FIX: Escaping applied via shell_join in wp_run
 # ==================================================
 
 premium_update_for_site() {
@@ -1284,15 +1359,20 @@ premium_update_for_site() {
       cmd="\"$PHP_BIN\" \"$WP_BIN\" --path=\"$wp_path\" ${WP_CLI_OPTS[*]} plugin is-installed \"$slug\""
     fi
 
+    # Using shell_join to represent the escaped zip path for logging in DRY RUN
+    local escaped_zip
+    escaped_zip=$(shell_join "$zip")
+
     if [[ "$DRY_RUN" == "1" ]]; then
-      echo "[$(ts)] ${pfx}${site} | premium | [DRY] if installed: $slug -> install $zip --force" | tee -a "$TEXT_LOG"
-      log_json "info" "$site" "premium" "[DRY] if installed: $slug -> install $zip --force"
+      echo "[$(ts)] ${pfx}${site} | premium | [DRY] if installed: $slug -> install $escaped_zip --force" | tee -a "$TEXT_LOG"
+      log_json "info" "$site" "premium" "[DRY] if installed: $slug -> install $escaped_zip --force"
       continue
     fi
 
     if bash -lc "$cmd" </dev/null >/dev/null 2>&1; then
       echo "[$(ts)] ${pfx}${site} | premium | Updating premium plugin: $slug" | tee -a "$TEXT_LOG"
       log_json "info" "$site" "premium" "Updating premium plugin: $slug"
+      # Passes the zip file to wp_run, where joined_args="$(shell_join "$@")" correctly escapes it
       wp_run "$wp_path" "$pfx" "$site" "premium" plugin install "$zip" --force
     else
       echo "[$(ts)] ${pfx}${site} | premium | Skip premium (not installed): $slug" | tee -a "$TEXT_LOG"
